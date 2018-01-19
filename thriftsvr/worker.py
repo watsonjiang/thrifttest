@@ -17,7 +17,9 @@ from gevent.server import StreamServer
 from gevent.socket import wait_write, socket
 
 from thriftsvr import util
-
+from thriftsvr.workertmp import WorkerTmp
+from thrift.transport import TSocket
+from thrift.transport import TTransport
 
 class Worker(object):
 
@@ -45,6 +47,8 @@ class Worker(object):
         self.nr = 0
         self.alive = True
         self.log = logging.getLogger('thriftsvr.worker')
+        self.tmp = WorkerTmp()
+
 
     def __str__(self):
         return "<Worker %s>" % self.pid
@@ -55,7 +59,7 @@ class Worker(object):
         once every ``self.timeout`` seconds. If you fail in accomplishing
         this task, the master process will murder your workers.
         """
-        #self.tmp.notify()
+        self.tmp.notify()
 
     def run(self):
         """\
@@ -168,12 +172,13 @@ class GeventWorker(Worker):
 
     def handle(self, listener, client, addr):
         #client转换成Thrift识别的对象
-        tclient = TSocket()
+        client.setblocking(1)
+        tclient = TSocket.TSocket()
         tclient.setHandle(client)
-        itrans = self.inputTransportFactory.getTransport(client)
-        otrans = self.outputTransportFactory.getTransport(client)
-        iprot = self.inputProtocolFactory.getProtocol(itrans)
-        oprot = self.outputProtocolFactory.getProtocol(otrans)
+        itrans = self.app.tfactory.getTransport(tclient)
+        otrans = self.app.tfactory.getTransport(tclient)
+        iprot = self.app.pfactory.getProtocol(itrans)
+        oprot = self.app.pfactory.getProtocol(otrans)
         try:
             processor = self.app.processor
             while True:
@@ -183,7 +188,7 @@ class GeventWorker(Worker):
         except Exception as x:
             pass
 
-        itrnas.close()
+        itrans.close()
         otrans.close()
 
     def run(self):
@@ -229,12 +234,6 @@ class GeventWorker(Worker):
                 server.stop(timeout=1)
         except:
             pass
-
-    def handle(self, listener, client, addr):
-        # Connected socket timeout defaults to socket.getdefaulttimeout().
-        # This forces to blocking mode.
-        client.setblocking(1)
-        super(GeventWorker, self).handle(listener, client, addr)
 
     def handle_quit(self, sig, frame):
         # Move this out of the signal handler so we can use

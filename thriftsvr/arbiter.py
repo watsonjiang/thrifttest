@@ -98,11 +98,9 @@ class Arbiter(object):
         self.pid = os.getpid()
         
         self.init_signals()
-        self.log.info("-----------after init_signals()")     
         #创建socket
         self.LISTENERS = sock.create_sockets([self.address])
 
-        self.log.info("-----------after create_sockets()")     
         listeners_str = ",".join([str(l) for l in self.LISTENERS])
         self.log.debug("Master booted")
         self.log.info("Listening at: %s (%s)", listeners_str, self.pid)
@@ -453,6 +451,7 @@ class Arbiter(object):
                     worker = self.WORKERS.pop(wpid, None)
                     if not worker:
                         continue
+                    worker.tmp.close()
         except OSError as e:
             if e.errno != errno.ECHILD:
                 raise
@@ -509,6 +508,11 @@ class Arbiter(object):
             sys.exit(-1)
         finally:
             self.log.info("Worker exiting (pid: %s)", worker.pid)
+            try:
+                worker.tmp.close()
+            except:
+                self.log.warning("Exception during worker exit:\n%s",
+                                  traceback.format_exc()) 
 
     def spawn_workers(self):
         """\
@@ -544,7 +548,7 @@ class Arbiter(object):
             if e.errno == errno.ESRCH:
                 try:
                     worker = self.WORKERS.pop(pid)
-                    #worker.tmp.close()
+                    worker.tmp.close()
                     return
                 except (KeyError, OSError):
                     return

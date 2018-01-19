@@ -16,15 +16,12 @@ from thriftsvr import util
 class BaseSocket(object):
 
     def __init__(self, address):
-        logging.info("------------BaskSocket::init") 
         self.log = logging.getLogger('thriftsvr.sock')
         self.cfg_addr = address
         sock = socket.socket(self.FAMILY, socket.SOCK_STREAM)
         bound = False
 
-        logging.info("------------BaskSocket::init2") 
         self.sock = self.set_options(sock, bound=bound)
-        logging.info("------------BaskSocket::init3") 
 
     def __str__(self):
         return "<socket %d>" % self.sock.fileno()
@@ -43,7 +40,6 @@ class BaseSocket(object):
             self.bind(sock)
         sock.setblocking(0)
 
-        logging.info("------------BaskSocket::set_options") 
         # make sure that the socket can be inherited
         if hasattr(sock, "set_inheritable"):
             sock.set_inheritable(True)
@@ -113,12 +109,10 @@ def create_sockets(laddr):
 
     for addr in laddr:
         sock_type = _sock_type(addr)
-        logging.info("--------sock_type %s" % (sock_type.__name__))
         sock = None
         for i in range(5):
             try:
                 sock = sock_type(addr)
-                logging.info("--------sock")
             except socket.error as e:
                 log = logging.getLogger('thriftsvr.sock')
                 if e.args[0] == errno.EADDRINUSE:

@@ -22,7 +22,7 @@ c = client.Client(iface_cls=logging.Client, host='localhost', port=9090, pool_si
 while True:
     time.sleep(1)
     try:
-        c.log1('hello thrift')
+        c.log('hello thrift')
     except:
         traceback.print_exc()
 

@@ -17,13 +17,13 @@ from thrift.transport import TTransport
 from thrift.protocol import TBinaryProtocol
 from thriftsvr.app import ThriftApplication
 
+import os
 
 # Server implementation
 class LoggingHandler:
     # return current time stamp
     def log(self, message):
-       print(message)
-       raise LogException(code=2, reason='thank')
+       print("pid:{} {}".format(os.getpid(), message))
 
     def log1(self, message):
        print("hello", message)
