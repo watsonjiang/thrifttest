@@ -1,5 +1,9 @@
 from gevent import monkey; monkey.patch_all()
 import sys
+import logging
+FORMAT = '%(asctime)-15s %(message)s'
+logging.basicConfig(format=FORMAT, level=logging.DEBUG)
+
 # your gen-py dir
 sys.path.append('gen-py')
 
@@ -11,7 +15,8 @@ from watson.ttypes import LogException
 from thrift.transport import TSocket
 from thrift.transport import TTransport
 from thrift.protocol import TBinaryProtocol
-from thrift.server import TServer
+from thriftsvr.app import ThriftApplication
+
 
 # Server implementation
 class LoggingHandler:
@@ -32,8 +37,7 @@ transport = TSocket.TServerSocket(port=9090)
 tfactory = TTransport.TFramedTransportFactory()
 pfactory = TBinaryProtocol.TBinaryProtocolFactory()
 
-# set server
-server = TServer.TThreadedServer(processor, transport, tfactory, pfactory)
+app = ThriftApplication(processor, ('127.0.0.1', 9090), tfactory, pfactory)
 
 print('Starting server')
-server.serve()
+app.run()
