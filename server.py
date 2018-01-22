@@ -39,5 +39,6 @@ pfactory = TBinaryProtocol.TBinaryProtocolFactory()
 
 app = ThriftApplication(processor, ('127.0.0.1', 9090), tfactory, pfactory)
 
-print('Starting server')
-app.run()
+if __name__ == '__main__':
+   print('Starting server')
+   app.run()
