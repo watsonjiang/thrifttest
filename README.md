@@ -38,4 +38,29 @@ worker防呆：
     如果增加worker后，其它worker能把手里的连接转给新加的worker，就能立刻发挥增加worker的作用。
 
  
-   
+服务发现：
+    使用zk作服务注册
+    每个servie接口在zk里暴露一个临时节点
+    example:
+/service/com.watson.orion/00000001
+
+{
+    ‘service’: ‘com.watson.orion’
+    ‘version’: ‘0.0.1’
+    ‘label’: [‘test’, ‘slow’]
+    ‘ip’:’127.0.0.1’
+    ‘port’: 12345
+    ‘extra’:{}
+}
+
+节点信息是immutable的
+一旦创建，不能改变。
+改变需要取消原节点，增加新节点
+
+     服务端约定:
+       1 服务初始化完成后注册
+       2 网络原因造成zk session失效后, 服务端重新注册一个新节点
+     客户端约定：
+       1 监听服务节点下的子节点变更，发现新增服务节点
+       2 监听服务节点下的子节点变更，删除消失的服务节点
+
