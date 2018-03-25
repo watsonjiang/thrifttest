@@ -2,13 +2,14 @@ from thrift.transport import TTransport
 from thrift.transport import TSocket
 from thrift.protocol import TBinaryProtocol
 
+
 #Thrift connection pool
 class ConnectionPool(object):
 
     DEFAULT_NETWORK_TIMEOUT = 0
     DEFAULT_POOL_SIZE = 100
 
-    def __init__(self, host, port, iface_cls, size=DEFAULT_POOL_SIZE, async=False, network_timeout=DEFAULT_NETWORK_TIMEOUT):
+    def __init__(self, host, port, iface_cls, size=DEFAULT_POOL_SIZE, network_timeout=DEFAULT_NETWORK_TIMEOUT):
         self.host = host
         self.port = port
         self.iface_cls = iface_cls
@@ -17,24 +18,15 @@ class ConnectionPool(object):
         self.size = size
 
         self._closed = False
-        self._async = async
-        if self._async:
-            import gevent.queue
-            try:
-                from gevent import lock as glock
-            except ImportError:
-                # gevent < 1.0
-                from gevent import coros as glock
-            self._semaphore = glock.BoundedSemaphore(size)
-            self._connection_queue = gevent.queue.LifoQueue(size)
-            self._QueueEmpty = gevent.queue.Empty
-
-        else:
-            import threading
-            import queue
-            self._semaphore = threading.BoundedSemaphore(size)
-            self._connection_queue = queue.LifoQueue(size)
-            self._QueueEmpty = queue.Empty
+        import gevent.queue
+        try:
+            from gevent import lock as glock
+        except ImportError:
+            # gevent < 1.0
+            from gevent import coros as glock
+        self._semaphore = glock.BoundedSemaphore(size)
+        self._connection_queue = gevent.queue.LifoQueue(size)
+        self._QueueEmpty = gevent.queue.Empty
 
     def close(self):
         self._closed = True

@@ -19,7 +19,7 @@ class WorkerTmp(object):
         fdir = '/tmp'
         if fdir and not os.path.isdir(fdir):
             raise RuntimeError("%s doesn't exist. Can't create workertmp." % fdir)
-        fd, name = tempfile.mkstemp(prefix="wgunicorn-", dir=fdir)
+        fd, name = tempfile.mkstemp(prefix="thriftsvr-", dir=fdir)
 
         # unlink the file so we don't leak tempory files
         try:

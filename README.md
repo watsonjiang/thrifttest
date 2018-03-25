@@ -14,6 +14,12 @@ worker 每个子进程作为一个worker，所有worker监听父进程打开的�
 
 arbiter 负责建立侦听句柄并管理子进程.
 
+迟加载：
+    参考gunicorn， 提供命令thriftsvr [options] <app>
+    其中options是参数，app是应用（多个应用逗号分隔)
+    thriftsvr启动arbiter，派生子进程。
+    子进程派生完成后再加载应用
+    arbiter进程不加载应用任何信息. 为了防止子进程import扰乱arbiter加载器
 
 worker防呆：
     由于worker本质上是单线程程序，处理不当容易卡死。需要引入防呆机制。
@@ -64,3 +70,4 @@ worker防呆：
        1 监听服务节点下的子节点变更，发现新增服务节点
        2 监听服务节点下的子节点变更，删除消失的服务节点
 
+python thriftsvr/app/luncher.py -a 127.0.0.1:9999 -w 10 -v -n test server:app1

@@ -1,49 +1,32 @@
 # -*- coding: utf-8 -
 #
-# This file is part of gunicorn released under the MIT license.
-# See the NOTICE for more information.
 
 from __future__ import print_function
 
-import email.utils
 import fcntl
 import io
 import os
-import pkg_resources
 import pwd
 import random
 import socket
 import sys
-import textwrap
 import time
 import traceback
-import inspect
 import errno
 import warnings
 import logging
 import re
 
-REDIRECT_TO = getattr(os, 'devnull', '/dev/null')
+from thriftsvr.errors import AppImportError
+from thriftsvr.app import ThriftApplication
 
-# Server and Date aren't technically hop-by-hop
-# headers, but they are in the purview of the
-# origin server which the WSGI spec says we should
-# act like. So we drop them and add our own.
-#
-# In the future, concatenation server header values
-# might be better, but nothing else does it and
-# dropping them is easier.
-hop_headers = set("""
-    connection keep-alive proxy-authenticate proxy-authorization
-    te trailers transfer-encoding upgrade
-    server date
-    """.split())
+REDIRECT_TO = getattr(os, 'devnull', '/dev/null')
 
 try:
     from setproctitle import setproctitle
 
     def _setproctitle(title):
-        setproctitle("gunicorn: %s" % title)
+        setproctitle("thriftsvr: %s" % title)
 except ImportError:
     def _setproctitle(title):
         return
@@ -68,11 +51,11 @@ except ImportError:
     def import_module(name, package=None):
         """Import a module.
 
-The 'package' argument is required when performing a relative import. It
-specifies the package to use as the anchor point from which to resolve the
-relative import to an absolute import.
+           The 'package' argument is required when performing a relative import. It
+           specifies the package to use as the anchor point from which to resolve the
+           relative import to an absolute import.
 
-"""
+        """
         if name.startswith('.'):
             if not package:
                 raise TypeError("relative imports require the 'package' argument")
@@ -253,29 +236,36 @@ def write_nonblock(sock, data, chunked=False):
     else:
         return write(sock, data, chunked)
 
+def import_app(module):
+    parts = module.split(":", 1)
+    if len(parts) == 1:
+        module, obj = module, "application"
+    else:
+        module, obj = parts[0], parts[1]
 
-def write_error(sock, status_int, reason, mesg):
-    html = textwrap.dedent("""\
-    <html>
-      <head>
-        <title>%(reason)s</title>
-      </head>
-      <body>
-        <h1><p>%(reason)s</p></h1>
-        %(mesg)s
-      </body>
-    </html>
-    """) % {"reason": reason, "mesg": _compat.html_escape(mesg)}
+    try:
+        __import__(module)
+    except ImportError:
+        if module.endswith(".py") and os.path.exists(module):
+            msg = "Failed to find application, did you mean '%s:%s'?"
+            raise ImportError(msg % (module.rsplit(".", 1)[0], obj))
+        else:
+            raise
 
-    http = textwrap.dedent("""\
-    HTTP/1.1 %s %s\r
-    Connection: close\r
-    Content-Type: text/html\r
-    Content-Length: %d\r
-    \r
-    %s""") % (str(status_int), reason, len(html), html)
-    write_nonblock(sock, http.encode('latin1'))
+    mod = sys.modules[module]
 
+    try:
+        app = eval(obj, vars(mod))
+    except NameError:
+        raise AppImportError("Failed to find application object %r in %r" % (obj, module))
+
+    if app is None:
+        raise AppImportError("Failed to find application object: %r" % obj)
+
+    if not isinstance(app, ThriftApplication):
+        raise AppImportError("application should be instance of ThriftApplication")
+
+    return app
 
 def getcwd():
     # get current path, try to use PWD env first
@@ -289,19 +279,6 @@ def getcwd():
     except:
         cwd = os.getcwd()
     return cwd
-
-
-def http_date(timestamp=None):
-    """Return the current date and time formatted for a message header."""
-    if timestamp is None:
-        timestamp = time.time()
-    s = email.utils.formatdate(timestamp, localtime=False, usegmt=True)
-    return s
-
-
-def is_hoppish(header):
-    return header.lower().strip() in hop_headers
-
 
 def daemonize(enable_stdio_inheritance=False):
     """\
@@ -400,8 +377,6 @@ def check_is_writeable(path):
         raise RuntimeError("Error: '%s' isn't writable [%r]" % (path, e))
     f.close()
 
-
-
 def has_fileno(obj):
     if not hasattr(obj, "fileno"):
         return False
@@ -427,27 +402,3 @@ def warn(msg):
     print("!!!\n", file=sys.stderr)
     sys.stderr.flush()
 
-
-def make_fail_app(msg):
-    msg = to_bytestring(msg)
-
-    def app(environ, start_response):
-        start_response("500 Internal Server Error", [
-            ("Content-Type", "text/plain"),
-            ("Content-Length", str(len(msg)))
-        ])
-        return [msg]
-
-    return app
-
-
-def split_request_uri(uri):
-    if uri.startswith("//"):
-        # When the path starts with //, urlsplit considers it as a
-        # relative uri while the RFC says we should consider it as abs_path
-        # http://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html#sec5.1.2
-        # We use temporary dot prefix to workaround this behaviour
-        parts = _compat.urlsplit("." + uri)
-        return parts._replace(path=parts.path[1:])
-
-    return _compat.urlsplit(uri)

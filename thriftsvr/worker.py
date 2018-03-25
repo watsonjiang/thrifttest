@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -
 #
-from datetime import datetime
 import os
-from random import randint
 import signal
 import sys
 import time
-import traceback
 import logging
 from functools import partial
 
@@ -14,7 +11,7 @@ _socket = __import__("socket")
 import gevent
 from gevent.pool import Pool
 from gevent.server import StreamServer
-from gevent.socket import wait_write, socket
+from gevent.socket import socket
 
 from thriftsvr import util
 from thriftsvr.workertmp import WorkerTmp
@@ -28,22 +25,23 @@ class Worker(object):
 
     PIPE = []
 
-    def __init__(self, age, ppid, sockets, app, timeout):
+    def __init__(self, age, ppid, sockets, app_module, worker_connections, timeout):
         """\
         This is called pre-fork so it shouldn't do anything to the
         current process. If there's a need to make process wide
         changes you'll want to do that in ``self.init_process()``.
         """
+        self.log = logging.getLogger("thriftsvr.Worker")
         self.age = age
         self.pid = "[booting]"
         self.ppid = ppid
         self.sockets = sockets
-        self.app = app
+        self.app_module = app_module
         self.timeout = timeout
         self.booted = False
         self.aborted = False
         self.graceful_timeout = 3  #服务器停止后等3秒优雅结束
-        self.worker_connections = app.worker_connections
+        self.worker_connections = worker_connections
         self.nr = 0
         self.alive = True
         self.log = logging.getLogger('thriftsvr.worker')
@@ -195,6 +193,8 @@ class GeventWorker(Worker):
         servers = []
         ssl_args = {}
 
+        self.log.info("Worker booted(pid:{}).".format(self.pid))
+
         for s in self.sockets:
             s.setblocking(1)
             pool = Pool(self.worker_connections)
@@ -203,6 +203,7 @@ class GeventWorker(Worker):
 
             server.start()
             servers.append(server)
+
 
         while self.alive:
             self.notify()
@@ -240,10 +241,20 @@ class GeventWorker(Worker):
         # blocking calls. See #1126
         gevent.spawn(super(GeventWorker, self).handle_quit, sig, frame)
 
+    def load_app(self):
+        self.app = util.import_app(self.app_module)
 
     def init_process(self):
         # monkey patch here
         self.patch()
+
+        # load app
+        # any exception exit process with retcode 4
+        try:
+            self.load_app()
+        except:
+            self.log.exception("Fail to load app.", exc_info=True)
+            sys.exit(4)
 
         # reinit the hub
         from gevent import hub

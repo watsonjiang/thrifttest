@@ -17,7 +17,7 @@ from thriftpool import client
 import traceback
 import time
 
-c = client.Client(iface_cls=logging.Client, host='localhost', port=9090, pool_size=3, retries=300)
+c = client.Client(logging.Client, host='localhost', port=9999, pool_size=3, retries=300)
 
 while True:
     time.sleep(1)

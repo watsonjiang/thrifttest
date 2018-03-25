@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -
 #
+from gevent import monkey
+monkey.patch_all()
 
 import errno
 import os
@@ -10,11 +12,15 @@ import sys
 import time
 import traceback
 import logging
+import json
+
+from kazoo.client import KazooClient
+from kazoo.client import KazooState
 
 from thriftsvr.errors import HaltServer
 from thriftsvr import sock, util
 
-from thriftsvr import __version__, SERVER_SOFTWARE
+from thriftsvr import SERVER_SOFTWARE
 from thriftsvr.worker import GeventWorker
 
 class Arbiter(object):
@@ -23,7 +29,6 @@ class Arbiter(object):
     kills them if needed. It also manages application reloading
     via SIGHUP/USR2.
     """
-    
 
     # A flag indicating if a worker failed to
     # to boot. If a worker process exist with
@@ -32,8 +37,6 @@ class Arbiter(object):
 
     # A flag indicating if an application failed to be loaded
     APP_LOAD_ERROR = 4
-
-    START_CTX = {}
 
     LISTENERS = []
     WORKERS = {}
@@ -48,13 +51,15 @@ class Arbiter(object):
         if name[:3] == "SIG" and name[3] != "_"
     )
 
-    def __init__(self, app):
-        self._num_workers = None
+    def __init__(self, conf):
+        self._num_workers = conf.workers
         self._last_logged_active_worker_count = None
         self.log = logging.getLogger('thriftsvr.Arbiter')
         
-        self.setup(app)
-
+        self.conf = conf
+        self.address = conf.bind
+        self.num_workers = self.conf.workers
+        self.proc_name = self.conf.proc_name
         self.pidfile = None
         self.worker_age = 0
         self.reexec_pid = 0
@@ -62,38 +67,12 @@ class Arbiter(object):
         self.master_name = "Master"
         self.graceful_timeout = 3
         self.timeout = 3
-        cwd = util.getcwd()
-
-        args = sys.argv[:]
-        args.insert(0, sys.executable)
-
-        # init start context
-        self.START_CTX = {
-            "args": args,
-            "cwd": cwd,
-            0: sys.executable
-        }
-
-    def _get_num_workers(self):
-        return self._num_workers
-
-    def _set_num_workers(self, value):
-        old_value = self._num_workers
-        self._num_workers = value
-    num_workers = property(_get_num_workers, _set_num_workers)
-
-    def setup(self, app):
-        self.app = app
-
-        self.address = self.app.address
-        self.num_workers = self.app.workers
-        self.proc_name = self.app.proc_name
 
     def start(self):
-        """\
+        """
         Initialize the arbiter. Start listening and set pidfile if needed.
         """
-        self.log.info("Starting thriftsvr %s", __version__)
+        self.log.info("Starting %s", SERVER_SOFTWARE)
 
         self.pid = os.getpid()
         
@@ -105,9 +84,41 @@ class Arbiter(object):
         self.log.debug("Master booted")
         self.log.info("Listening at: %s (%s)", listeners_str, self.pid)
 
+    def init_zk(self):
+        #没有service name就不去zk注册
+        if not self.conf.service:
+            self.log.warning('Service is empty. will not expose service to zk.')
+            return
+
+        from kazoo.handlers.gevent import SequentialGeventHandler
+        self.is_service_exposed = False
+        self.zk = KazooClient(hosts='localhost:2181', handler=SequentialGeventHandler(),
+                              connection_retry={'max_tries':-1, 'max_delay':10})
+        def _listener(state):
+            logging.info("state:{}".format(state))
+            if state == KazooState.LOST:
+                self.is_service_exposed = False
+            elif state == KazooState.CONNECTED:
+                if not self.is_service_exposed:
+                    import threading
+                    threading.Thread(target=self.expose_on_zk).start()
+        self.zk.add_listener(_listener)
+        self.zk.start()
+
+    def expose_on_zk(self):
+        e = {}
+        conf = self.conf
+        e['service'] = conf.service
+        e['label'] = {}
+        e['bind'] = conf.bind
+        value = json.dumps(e).encode()
+        service_path = '/thriftsvr/{}'.format(conf.service.replace('.', '/'))
+        self.zk.ensure_path(service_path)
+        node_path = '{}/node-'.format(service_path)
+        self.zk.create(node_path.format(conf.service), value, ephemeral=True, sequence=True, makepath=True)
 
     def init_signals(self):
-        """\
+        """
         Initialize master signal handling. Most of the signals
         are queued. Child signals only wake up the master.
         """
@@ -132,16 +143,15 @@ class Arbiter(object):
             self.wakeup()
 
     def run(self):
-        "Main master loop."
+        """Main master loop."""
         self.start()
         util._setproctitle("master [%s]" % self.proc_name)
 
         try:
             self.manage_workers()
-
+            #启动worker后再注册到zk，避免注册过早造成请求失败
+            self.init_zk()
             while True:
-                self.maybe_promote_master()
-
                 sig = self.SIG_QUEUE.pop(0) if self.SIG_QUEUE else None
                 if sig is None:
                     self.sleep()
@@ -232,15 +242,6 @@ class Arbiter(object):
         self.log.reopen_files()
         self.kill_workers(signal.SIGUSR1)
 
-    def handle_usr2(self):
-        """\
-        SIGUSR2 handling.
-        Creates a new master/worker set as a slave of the current
-        master without affecting old workers. Use this to do live
-        deployment with the ability to backout a change.
-        """
-        self.reexec()
-
     def handle_winch(self):
         """SIGWINCH handling"""
         if self.cfg.daemon:
@@ -249,20 +250,6 @@ class Arbiter(object):
             self.kill_workers(signal.SIGTERM)
         else:
             self.log.debug("SIGWINCH ignored. Not daemonized")
-
-    def maybe_promote_master(self):
-        if self.master_pid == 0:
-            return
-
-        if self.master_pid != os.getppid():
-            self.log.info("Master has been promoted.")
-            # reset master infos
-            self.master_name = "Master"
-            self.master_pid = 0
-            self.proc_name = self.proc_name
-            del os.environ['GUNICORN_PID']
-            # reset proctitle
-            util._setproctitle("master [%s]" % self.proc_name)
 
     def wakeup(self):
         """\
@@ -327,83 +314,6 @@ class Arbiter(object):
 
         self.kill_workers(signal.SIGKILL)
 
-    def reexec(self):
-        """\
-        Relaunch the master and workers.
-        """
-        if self.reexec_pid != 0:
-            self.log.warning("USR2 signal ignored. Child exists.")
-            return
-
-        if self.master_pid != 0:
-            self.log.warning("USR2 signal ignored. Parent exists.")
-            return
-
-        master_pid = os.getpid()
-        self.reexec_pid = os.fork()
-        if self.reexec_pid != 0:
-            return
-
-        os.chdir(self.START_CTX['cwd'])
-
-        # exec the process using the original environment
-        os.execvpe(self.START_CTX[0], self.START_CTX['args'], environ)
-
-    def reload(self):
-        old_address = self.cfg.address
-
-        # reset old environment
-        for k in self.cfg.env:
-            if k in self.cfg.env_orig:
-                # reset the key to the value it had before
-                # we launched gunicorn
-                os.environ[k] = self.cfg.env_orig[k]
-            else:
-                # delete the value set by gunicorn
-                try:
-                    del os.environ[k]
-                except KeyError:
-                    pass
-
-        # reload conf
-        self.app.reload()
-        self.setup(self.app)
-
-        # reopen log files
-        self.log.reopen_files()
-
-        # do we need to change listener ?
-        if old_address != self.cfg.address:
-            # close all listeners
-            for l in self.LISTENERS:
-                l.close()
-            # init new listeners
-            self.LISTENERS = sock.create_sockets(self.cfg, self.log)
-            listeners_str = ",".join([str(l) for l in self.LISTENERS])
-            self.log.info("Listening at: %s", listeners_str)
-
-        # do some actions on reload
-        self.cfg.on_reload(self)
-
-        # unlink pidfile
-        if self.pidfile is not None:
-            self.pidfile.unlink()
-
-        # create new pidfile
-        if self.cfg.pidfile is not None:
-            self.pidfile = Pidfile(self.cfg.pidfile)
-            self.pidfile.create(self.pid)
-
-        # set new proc_name
-        util._setproctitle("master [%s]" % self.proc_name)
-
-        # spawn new workers
-        for _ in range(self.cfg.workers):
-            self.spawn_worker()
-
-        # manage workers
-        self.manage_workers()
-
     def murder_workers(self):
         """\
         Kill unused/idle workers
@@ -434,24 +344,21 @@ class Arbiter(object):
                 wpid, status = os.waitpid(-1, os.WNOHANG)
                 if not wpid:
                     break
-                if self.reexec_pid == wpid:
-                    self.reexec_pid = 0
-                else:
-                    # A worker was terminated. If the termination reason was
-                    # that it could not boot, we'll shut it down to avoid
-                    # infinite start/stop cycles.
-                    exitcode = status >> 8
-                    if exitcode == self.WORKER_BOOT_ERROR:
-                        reason = "Worker failed to boot."
-                        raise HaltServer(reason, self.WORKER_BOOT_ERROR)
-                    if exitcode == self.APP_LOAD_ERROR:
-                        reason = "App failed to load."
-                        raise HaltServer(reason, self.APP_LOAD_ERROR)
+                # A worker was terminated. If the termination reason was
+                # that it could not boot, we'll shut it down to avoid
+                # infinite start/stop cycles.
+                exitcode = status >> 8
+                if exitcode == self.WORKER_BOOT_ERROR:
+                    reason = "Worker failed to boot."
+                    raise HaltServer(reason, self.WORKER_BOOT_ERROR)
+                if exitcode == self.APP_LOAD_ERROR:
+                    reason = "App failed to load."
+                    raise HaltServer(reason, self.APP_LOAD_ERROR)
 
-                    worker = self.WORKERS.pop(wpid, None)
-                    if not worker:
-                        continue
-                    worker.tmp.close()
+                worker = self.WORKERS.pop(wpid, None)
+                if not worker:
+                    continue
+                worker.tmp.close()
         except OSError as e:
             if e.errno != errno.ECHILD:
                 raise
@@ -481,7 +388,8 @@ class Arbiter(object):
     def spawn_worker(self):
         self.worker_age += 1
         worker = GeventWorker(self.worker_age, self.pid, self.LISTENERS,
-                              self.app, self.timeout / 2.0)
+                              self.conf.app_module, self.conf.connections,
+                              self.timeout / 2.0)
         pid = os.fork()
         if pid != 0:
             worker.pid = pid
